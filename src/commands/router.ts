@@ -1,7 +1,7 @@
 import type { Session } from '../session.js';
 import { findSkill } from '../claude/skill-scanner.js';
 import { logger } from '../logger.js';
-import { handleHelp, handleClear, handleCwd, handleModel, handlePermission, handleStatus, handleSkills, handleHistory, handleReset, handleCompact, handleUndo, handleVersion, handlePrompt, handleUnknown } from './handlers.js';
+import { handleHelp, handleClear, handleCwd, handleModel, handlePermission, handleBackend, handleStatus, handleSkills, handleHistory, handleReset, handleCompact, handleResume, handleUndo, handleVersion, handlePrompt, handleUnknown } from './handlers.js';
 
 export interface CommandContext {
   accountId: string;
@@ -56,6 +56,8 @@ export function routeCommand(ctx: CommandContext): CommandResult {
       return handleModel(ctx, args);
     case 'permission':
       return handlePermission(ctx, args);
+    case 'backend':
+      return handleBackend(ctx, args);
     case 'prompt':
       return handlePrompt(ctx, args);
     case 'status':
@@ -68,6 +70,8 @@ export function routeCommand(ctx: CommandContext): CommandResult {
       return handleUndo(ctx, args);
     case 'compact':
       return handleCompact(ctx);
+    case 'resume':
+      return handleResume(ctx, args);
     case 'version':
     case 'v':
       return handleVersion();

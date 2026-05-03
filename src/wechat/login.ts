@@ -125,10 +125,10 @@ export async function waitForQrScan(qrcodeId: string): Promise<AccountData> {
           status.includes('reject') ||
           status.includes('cancel')
         )) {
-          throw new Error(`二维码扫描失败: ${data.retmsg || status}`);
+          throw new Error(`QR scan failed: ${data.retmsg || status}`);
         }
         if (data.retmsg) {
-          throw new Error(`二维码扫描失败: ${data.retmsg}`);
+          throw new Error(`QR scan failed: ${data.retmsg}`);
         }
         break;
     }
