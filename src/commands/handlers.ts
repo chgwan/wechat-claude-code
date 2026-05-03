@@ -1,33 +1,36 @@
 import type { CommandContext, CommandResult } from './router.js';
 import { scanAllSkills, formatSkillList, findSkill, type SkillInfo } from '../claude/skill-scanner.js';
-import { loadConfig, saveConfig } from '../config.js';
-import { readFileSync } from 'node:fs';
+import { loadConfig, saveConfig, applyBackendEnv, type Backend } from '../config.js';
+import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-const HELP_TEXT = `可用命令：
+const HELP_TEXT = `Available commands:
 
-会话管理：
-  /help             显示帮助
-  /clear            清除当前会话
-  /reset            完全重置（包括工作目录等设置）
-  /status           查看当前会话状态
-  /compact          压缩上下文（开始新 SDK 会话，保留历史）
-  /history [数量]   查看对话记录（默认最近20条）
-  /undo [数量]      撤销最近对话（默认1条）
+Session:
+  /help             Show this help
+  /clear            Clear the current session
+  /reset            Full reset (including working directory)
+  /status           Show current session status
+  /compact          Compact context (start a new SDK session, keep history)
+  /history [n]      Show conversation history (default: last 20)
+  /undo [n]         Undo recent messages (default: 1)
+  /resume [ID]      List or resume Claude Code sessions for the current cwd
 
-配置：
-  /cwd [路径]       查看或切换工作目录
-  /model [名称]     查看或切换 Claude 模型
-  /permission [模式] 查看或切换权限模式
-  /prompt [内容]    查看或设置系统提示词（全局生效）
+Configuration:
+  /cwd [path]       Show or change working directory
+  /model [name]     Show or change Claude model
+  /permission [mode] Show or change permission mode
+  /backend [name]   Show or switch backend (claude / glm)
+  /prompt [text]    Show or set system prompt (applies globally)
 
-其他：
-  /skills [full]    列出已安装的 skill（full 显示描述）
-  /version          查看版本信息
-  /<skill> [参数]   触发已安装的 skill
+Other:
+  /skills [full]    List installed skills (full = with descriptions)
+  /version          Show version info
+  /<skill> [args]   Trigger an installed skill
 
-直接输入文字即可与 Claude Code 对话`;
+Send any plain text to chat with Claude Code`;
 
 // 缓存 skill 列表，避免每次命令都扫描文件系统
 let cachedSkills: SkillInfo[] | null = null;
@@ -57,69 +60,123 @@ export function handleClear(ctx: CommandContext): CommandResult {
   ctx.rejectPendingPermission?.();
   const newSession = ctx.clearSession();
   Object.assign(ctx.session, newSession);
-  return { reply: '✅ 会话已清除，下次消息将开始新会话。', handled: true };
+  return { reply: '✅ Session cleared. The next message will start a new session.', handled: true };
 }
 
 export function handleCwd(ctx: CommandContext, args: string): CommandResult {
   if (!args) {
-    return { reply: `当前工作目录: ${ctx.session.workingDirectory}\n用法: /cwd <路径>`, handled: true };
+    return { reply: `Current working directory: ${ctx.session.workingDirectory}\nUsage: /cwd <path>`, handled: true };
   }
   ctx.updateSession({ workingDirectory: args });
-  return { reply: `✅ 工作目录已切换为: ${args}`, handled: true };
+  return { reply: `✅ Working directory changed to: ${args}`, handled: true };
 }
 
 export function handleModel(ctx: CommandContext, args: string): CommandResult {
   if (!args) {
-    return { reply: '用法: /model <模型名称>\n例: /model claude-sonnet-4-6', handled: true };
+    return { reply: 'Usage: /model <model-name>\nExample: /model claude-sonnet-4-6', handled: true };
   }
   ctx.updateSession({ model: args });
-  return { reply: `✅ 模型已切换为: ${args}`, handled: true };
+  return { reply: `✅ Model changed to: ${args}`, handled: true };
 }
 
 const PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'auto'] as const;
 const PERMISSION_DESCRIPTIONS: Record<string, string> = {
-  default: '每次工具使用需手动审批',
-  acceptEdits: '自动批准文件编辑，其他需审批',
-  plan: '只读模式，不允许任何工具',
-  auto: '自动批准所有工具（危险模式）',
+  default: 'Manual approval required for every tool use',
+  acceptEdits: 'Auto-approve file edits; manual approval for everything else',
+  plan: 'Read-only mode — no tools allowed',
+  auto: 'Auto-approve all tools (dangerous mode)',
 };
 
 export function handlePermission(ctx: CommandContext, args: string): CommandResult {
   if (!args) {
     const current = ctx.session.permissionMode ?? 'default';
     const lines = [
-      '🔒 当前权限模式: ' + current,
+      '🔒 Current permission mode: ' + current,
       '',
-      '可用模式:',
+      'Available modes:',
       ...PERMISSION_MODES.map(m => `  ${m} — ${PERMISSION_DESCRIPTIONS[m]}`),
       '',
-      '用法: /permission <模式>',
+      'Usage: /permission <mode>',
     ];
     return { reply: lines.join('\n'), handled: true };
   }
   const mode = args.trim();
   if (!PERMISSION_MODES.includes(mode as any)) {
     return {
-      reply: `未知模式: ${mode}\n可用: ${PERMISSION_MODES.join(', ')}`,
+      reply: `Unknown mode: ${mode}\nAvailable: ${PERMISSION_MODES.join(', ')}`,
       handled: true,
     };
   }
   ctx.updateSession({ permissionMode: mode as any });
-  const warning = mode === 'auto' ? '\n\n⚠️ 已开启危险模式：所有工具调用将自动批准，无需手动确认。' : '';
-  return { reply: `✅ 权限模式已切换为: ${mode}\n${PERMISSION_DESCRIPTIONS[mode]}${warning}`, handled: true };
+  const warning = mode === 'auto' ? '\n\n⚠️ Dangerous mode enabled: all tool calls will be auto-approved without confirmation.' : '';
+  return { reply: `✅ Permission mode changed to: ${mode}\n${PERMISSION_DESCRIPTIONS[mode]}${warning}`, handled: true };
+}
+
+const BACKENDS: Backend[] = ['claude', 'glm'];
+const BACKEND_DESCRIPTIONS: Record<string, string> = {
+  claude: 'Official Anthropic Claude (default)',
+  glm: 'GLM backend via open.bigmodel.cn',
+};
+
+export function handleBackend(_ctx: CommandContext, args: string): CommandResult {
+  const config = loadConfig();
+
+  if (!args) {
+    const current = config.backend ?? 'claude';
+    const lines = [
+      '🔌 Current backend: ' + current,
+      '',
+      'Available backends:',
+      ...BACKENDS.map(b => {
+        const marker = b === current ? ' ←' : '';
+        return `  ${b} — ${BACKEND_DESCRIPTIONS[b]}${marker}`;
+      }),
+      '',
+      'Usage: /backend <name>',
+    ];
+    return { reply: lines.join('\n'), handled: true };
+  }
+
+  const backend = args.trim().toLowerCase() as Backend;
+  if (!BACKENDS.includes(backend)) {
+    return {
+      reply: `Unknown backend: ${backend}\nAvailable: ${BACKENDS.join(', ')}`,
+      handled: true,
+    };
+  }
+
+  config.backend = backend;
+
+  if (backend === 'glm' && !config.glmAuthToken) {
+    return {
+      reply: '⚠️ GLM auth token not configured.\n\nSet it in ~/.wechat-claude-code/config.env:\n  glmAuthToken=<your-token>',
+      handled: true,
+    };
+  }
+
+  saveConfig(config);
+  applyBackendEnv(config);
+
+  return {
+    reply: `✅ Backend changed to: ${backend}\n${BACKEND_DESCRIPTIONS[backend]}`,
+    handled: true,
+  };
 }
 
 export function handleStatus(ctx: CommandContext): CommandResult {
   const s = ctx.session;
   const mode = s.permissionMode ?? 'default';
+  const config = loadConfig();
+  const backend = config.backend ?? 'claude';
   const lines = [
-    '📊 会话状态',
+    '📊 Session status',
     '',
-    `工作目录: ${s.workingDirectory}`,
-    `模型: ${s.model ?? '默认'}`,
-    `权限模式: ${mode}`,
-    `会话ID: ${s.sdkSessionId ?? '无'}`,
-    `状态: ${s.state}`,
+    `Working directory: ${s.workingDirectory}`,
+    `Backend: ${backend}`,
+    `Model: ${s.model ?? 'default'}`,
+    `Permission mode: ${mode}`,
+    `Session ID: ${s.sdkSessionId ?? 'none'}`,
+    `State: ${s.state}`,
   ];
   return { reply: lines.join('\n'), handled: true };
 }
@@ -128,16 +185,16 @@ export function handleSkills(args: string): CommandResult {
   invalidateSkillCache();
   const skills = getSkills();
   if (skills.length === 0) {
-    return { reply: '未找到已安装的 skill。', handled: true };
+    return { reply: 'No installed skills found.', handled: true };
   }
 
   const showFull = args.trim().toLowerCase() === 'full';
   if (showFull) {
     const lines = skills.map(s => `/${s.name}\n   ${s.description}`);
-    return { reply: `📋 已安装的 Skill (${skills.length}):\n\n${lines.join('\n\n')}`, handled: true };
+    return { reply: `📋 Installed skills (${skills.length}):\n\n${lines.join('\n\n')}`, handled: true };
   }
   const lines = skills.map(s => `/${s.name}`);
-  return { reply: `📋 已安装的 Skill (${skills.length}):\n\n${lines.join('\n')}\n\n使用 /skills full 查看完整描述`, handled: true };
+  return { reply: `📋 Installed skills (${skills.length}):\n\n${lines.join('\n')}\n\nUse /skills full to see descriptions`, handled: true };
 }
 
 const MAX_HISTORY_LIMIT = 100;
@@ -145,13 +202,13 @@ const MAX_HISTORY_LIMIT = 100;
 export function handleHistory(ctx: CommandContext, args: string): CommandResult {
   const limit = args ? parseInt(args, 10) : 20;
   if (isNaN(limit) || limit <= 0) {
-    return { reply: '用法: /history [数量]\n例: /history 50（显示最近50条对话）', handled: true };
+    return { reply: 'Usage: /history [n]\nExample: /history 50 (show the last 50 messages)', handled: true };
   }
   const effectiveLimit = Math.min(limit, MAX_HISTORY_LIMIT);
 
-  const historyText = ctx.getChatHistoryText?.(effectiveLimit) || '暂无对话记录';
+  const historyText = ctx.getChatHistoryText?.(effectiveLimit) || 'No conversation history yet';
 
-  return { reply: `📝 对话记录（最近${effectiveLimit}条）:\n\n${historyText}`, handled: true };
+  return { reply: `📝 Conversation history (last ${effectiveLimit}):\n\n${historyText}`, handled: true };
 }
 
 /** 完全重置会话（包括工作目录等设置） */
@@ -162,21 +219,91 @@ export function handleReset(ctx: CommandContext): CommandResult {
   newSession.model = undefined;
   newSession.permissionMode = undefined;
   Object.assign(ctx.session, newSession);
-  return { reply: '✅ 会话已完全重置，所有设置恢复默认。', handled: true };
+  return { reply: '✅ Session fully reset. All settings restored to defaults.', handled: true };
 }
 
 /** 压缩上下文 — 清除 SDK 会话 ID，开始新上下文但保留聊天历史 */
 export function handleCompact(ctx: CommandContext): CommandResult {
   const currentSessionId = ctx.session.sdkSessionId;
   if (!currentSessionId) {
-    return { reply: 'ℹ️ 当前没有活动的 SDK 会话，无需压缩。', handled: true };
+    return { reply: 'ℹ️ No active SDK session to compact.', handled: true };
   }
   ctx.updateSession({
     previousSdkSessionId: currentSessionId,
     sdkSessionId: undefined,
   });
   return {
-    reply: '✅ 上下文已压缩\n\n下次消息将开始新的 SDK 会话（token 清零）\n聊天历史已保留，可用 /history 查看',
+    reply: '✅ Context compacted.\n\nThe next message will start a new SDK session (tokens reset to 0).\nChat history is preserved — use /history to view.',
+    handled: true,
+  };
+}
+
+/** Claude Code 使用的 cwd → 项目目录名编码：所有非字母数字字符替换为 `-` */
+function encodeCwdForProjects(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+function resolveCwd(p: string): string {
+  return p.replace(/^~/, process.env.HOME || homedir());
+}
+
+/** 列出/恢复 Claude Code SDK 会话（按当前工作目录） */
+export function handleResume(ctx: CommandContext, args: string): CommandResult {
+  const cwd = resolveCwd(ctx.session.workingDirectory);
+  const projectsDir = join(homedir(), '.claude', 'projects', encodeCwdForProjects(cwd));
+
+  if (!args) {
+    if (!existsSync(projectsDir)) {
+      return {
+        reply: `📂 No resumable sessions for the current working directory\n  Dir: ${cwd}\n  Expected storage: ${projectsDir}`,
+        handled: true,
+      };
+    }
+    let entries: { id: string; mtime: Date }[] = [];
+    try {
+      entries = readdirSync(projectsDir)
+        .filter((f) => f.endsWith('.jsonl'))
+        .map((f) => ({
+          id: f.replace(/\.jsonl$/, ''),
+          mtime: statSync(join(projectsDir, f)).mtime,
+        }))
+        .sort((a, b) => b.mtime.getTime() - a.mtime.getTime())
+        .slice(0, 20);
+    } catch (err) {
+      return { reply: `❌ Failed to read sessions directory: ${(err as Error).message}`, handled: true };
+    }
+    if (entries.length === 0) {
+      return { reply: `📂 No sessions for the current working directory\n  Dir: ${cwd}`, handled: true };
+    }
+    const lines = [
+      `📂 Sessions for the current working directory (latest ${entries.length}):`,
+      `  Dir: ${cwd}`,
+      '',
+      ...entries.map((e) => {
+        const t = e.mtime.toLocaleString('en-US');
+        return `  ${e.id}\n    Updated ${t}`;
+      }),
+      '',
+      'Usage: /resume <session-id>',
+    ];
+    return { reply: lines.join('\n'), handled: true };
+  }
+
+  const newId = args.trim();
+  const sessionFile = join(projectsDir, `${newId}.jsonl`);
+  const exists = existsSync(sessionFile);
+
+  ctx.rejectPendingPermission?.();
+  ctx.updateSession({
+    previousSdkSessionId: ctx.session.sdkSessionId,
+    sdkSessionId: newId,
+  });
+
+  const warn = exists
+    ? ''
+    : `\n\n⚠️ Session file not found in the current working directory:\n  ${sessionFile}\nIf the session belongs to a different directory, run /cwd to switch first.`;
+  return {
+    reply: `✅ The next message will resume session: ${newId}${warn}\n\nNote: /history shows the bridge's own chat log, which is separate from the SDK session.`,
     handled: true,
   };
 }
@@ -185,16 +312,16 @@ export function handleCompact(ctx: CommandContext): CommandResult {
 export function handleUndo(ctx: CommandContext, args: string): CommandResult {
   const count = args ? parseInt(args, 10) : 1;
   if (isNaN(count) || count <= 0) {
-    return { reply: '用法: /undo [数量]\n例: /undo 2（撤销最近2条对话）', handled: true };
+    return { reply: 'Usage: /undo [n]\nExample: /undo 2 (undo the last 2 messages)', handled: true };
   }
   const history = ctx.session.chatHistory || [];
   if (history.length === 0) {
-    return { reply: '⚠️ 没有对话记录可撤销', handled: true };
+    return { reply: '⚠️ No messages to undo', handled: true };
   }
   const actualCount = Math.min(count, history.length);
   ctx.session.chatHistory = history.slice(0, -actualCount);
   ctx.updateSession({ chatHistory: ctx.session.chatHistory });
-  return { reply: `✅ 已撤销最近 ${actualCount} 条对话`, handled: true };
+  return { reply: `✅ Undid the last ${actualCount} message(s)`, handled: true };
 }
 
 /** 查看版本信息 */
@@ -214,18 +341,18 @@ export function handlePrompt(_ctx: CommandContext, args: string): CommandResult 
   if (!args) {
     const current = config.systemPrompt;
     if (current) {
-      return { reply: `📝 当前系统提示词:\n${current}\n\n用法:\n/prompt <提示词>  — 设置\n/prompt clear   — 清除`, handled: true };
+      return { reply: `📝 Current system prompt:\n${current}\n\nUsage:\n/prompt <text>  — set\n/prompt clear   — clear`, handled: true };
     }
-    return { reply: '📝 暂无系统提示词\n\n用法: /prompt <提示词>\n例: /prompt 用中文回答我', handled: true };
+    return { reply: '📝 No system prompt set.\n\nUsage: /prompt <text>\nExample: /prompt Always answer in English', handled: true };
   }
   if (args.trim().toLowerCase() === 'clear') {
     config.systemPrompt = undefined;
     saveConfig(config);
-    return { reply: '✅ 系统提示词已清除', handled: true };
+    return { reply: '✅ System prompt cleared', handled: true };
   }
   config.systemPrompt = args.trim();
   saveConfig(config);
-  return { reply: `✅ 系统提示词已设置:\n${config.systemPrompt}`, handled: true };
+  return { reply: `✅ System prompt set:\n${config.systemPrompt}`, handled: true };
 }
 
 export function handleUnknown(cmd: string, args: string): CommandResult {
@@ -239,6 +366,6 @@ export function handleUnknown(cmd: string, args: string): CommandResult {
 
   return {
     handled: true,
-    reply: `未找到 skill: ${cmd}\n输入 /skills 查看可用列表`,
+    reply: `Unknown skill: ${cmd}\nUse /skills to list available skills`,
   };
 }

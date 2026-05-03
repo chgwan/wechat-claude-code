@@ -115,13 +115,13 @@ export function createSessionStore() {
     const messages = limit ? history.slice(-limit) : history;
 
     if (messages.length === 0) {
-      return '暂无对话记录';
+      return 'No conversation history yet';
     }
 
     const lines: string[] = [];
     for (const msg of messages) {
       const time = new Date(msg.timestamp).toLocaleString('zh-CN');
-      const role = msg.role === 'user' ? '用户' : 'Claude';
+      const role = msg.role === 'user' ? 'User' : 'Claude';
       lines.push(`[${time}] ${role}:`);
       lines.push(msg.content);
       lines.push('');

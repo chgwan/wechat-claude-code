@@ -14,7 +14,7 @@ import { createSessionStore, type Session } from './session.js';
 import { createPermissionBroker } from './permission.js';
 import { routeCommand, type CommandContext, type CommandResult } from './commands/router.js';
 import { claudeQuery, type QueryOptions } from './claude/provider.js';
-import { loadConfig, saveConfig } from './config.js';
+import { loadConfig, saveConfig, applyBackendEnv } from './config.js';
 import { logger } from './logger.js';
 import { DATA_DIR } from './constants.js';
 import { MessageType, type WeixinMessage } from './wechat/types.js';
@@ -88,7 +88,7 @@ async function runSetup(): Promise<void> {
   mkdirSync(DATA_DIR, { recursive: true });
   const QR_PATH = join(DATA_DIR, 'qrcode.png');
 
-  console.log('正在设置...\n');
+  console.log('Setting up...\n');
 
   // Loop: generate QR → display → poll for scan → handle expiry → repeat
   while (true) {
@@ -101,14 +101,14 @@ async function runSetup(): Promise<void> {
       // Headless Linux: display QR in terminal using qrcode-terminal
       try {
         const qrcodeTerminal = await import('qrcode-terminal');
-        console.log('请用微信扫描下方二维码：\n');
+        console.log('Scan the QR code below with WeChat:\n');
         qrcodeTerminal.default.generate(qrcodeUrl, { small: true });
         console.log();
-        console.log('二维码链接：', qrcodeUrl);
+        console.log('QR code URL:', qrcodeUrl);
         console.log();
       } catch {
         logger.warn('qrcode-terminal not available, falling back to URL');
-        console.log('无法在终端显示二维码，请访问链接：');
+        console.log('Cannot render QR code in terminal — open this URL:');
         console.log(qrcodeUrl);
         console.log();
       }
@@ -119,19 +119,19 @@ async function runSetup(): Promise<void> {
       writeFileSync(QR_PATH, pngData);
 
       openFile(QR_PATH);
-      console.log('已打开二维码图片，请用微信扫描：');
-      console.log(`图片路径: ${QR_PATH}\n`);
+      console.log('Opened QR code image — scan it with WeChat:');
+      console.log(`Image path: ${QR_PATH}\n`);
     }
 
-    console.log('等待扫码绑定...');
+    console.log('Waiting for scan to confirm binding...');
 
     try {
       await waitForQrScan(qrcodeId);
-      console.log('✅ 绑定成功!');
+      console.log('✅ Binding successful!');
       break;
     } catch (err: any) {
       if (err.message?.includes('expired')) {
-        console.log('⚠️ 二维码已过期，正在刷新...\n');
+        console.log('⚠️ QR code expired, refreshing...\n');
         continue;
       }
       throw err;
@@ -143,12 +143,12 @@ async function runSetup(): Promise<void> {
     logger.warn('Failed to clean up QR image', { path: QR_PATH });
   }
 
-  const workingDir = await promptUser('请输入工作目录', process.cwd());
+  const workingDir = await promptUser('Enter working directory', process.cwd());
   const config = loadConfig();
   config.workingDirectory = workingDir;
   saveConfig(config);
 
-  console.log('运行 npm run daemon -- start 启动服务');
+  console.log('Run "npm run daemon -- start" to launch the service');
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +160,7 @@ async function runDaemon(): Promise<void> {
   const account = loadLatestAccount();
 
   if (!account) {
-    console.error('未找到账号，请先运行 node dist/main.js setup');
+    console.error('No account found — run "node dist/main.js setup" first');
     process.exit(1);
   }
 
@@ -174,6 +174,9 @@ async function runDaemon(): Promise<void> {
     sessionStore.save(account.accountId, session);
   }
 
+  // Apply backend env vars (ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, etc.)
+  applyBackendEnv(config);
+
   // Fix: reset stale non-idle state on startup (e.g. after crash)
   if (session.state !== 'idle') {
     logger.warn('Resetting stale session state on startup', { state: session.state });
@@ -186,7 +189,7 @@ async function runDaemon(): Promise<void> {
   const activeControllers = new Map<string, AbortController>();
   const permissionBroker = createPermissionBroker(async () => {
     try {
-      await sender.sendText(account.userId ?? '', sharedCtx.lastContextToken, '⏰ 权限请求超时，已自动拒绝。');
+      await sender.sendText(account.userId ?? '', sharedCtx.lastContextToken, '⏰ Permission request timed out and was auto-denied.');
     } catch {
       logger.warn('Failed to send permission timeout message');
     }
@@ -200,7 +203,7 @@ async function runDaemon(): Promise<void> {
     },
     onSessionExpired: () => {
       logger.warn('Session expired, will keep retrying...');
-      console.error('⚠️ 微信会话已过期，请重新运行 setup 扫码绑定');
+      console.error('⚠️ WeChat session expired — re-run setup and scan again');
     },
   };
 
@@ -218,7 +221,7 @@ async function runDaemon(): Promise<void> {
   process.on('SIGTERM', shutdown);
 
   logger.info('Daemon started', { accountId: account.accountId });
-  console.log(`已启动 (账号: ${account.accountId})`);
+  console.log(`Started (account: ${account.accountId})`);
 
   await monitor.run();
 }
@@ -277,7 +280,7 @@ async function handleMessage(
     const lower = userText.toLowerCase();
     if (lower === 'y' || lower === 'yes' || lower === 'n' || lower === 'no') {
       permissionBroker.clearTimedOut(account.accountId);
-      await sender.sendText(fromUserId, contextToken, '⏰ 权限请求已超时，请重新发送你的请求。');
+      await sender.sendText(fromUserId, contextToken, '⏰ Permission request has timed out — please resend your message.');
       return;
     }
   }
@@ -290,19 +293,19 @@ async function handleMessage(
     if (!pendingPerm) {
       session.state = 'idle';
       sessionStore.save(account.accountId, session);
-      await sender.sendText(fromUserId, contextToken, '⚠️ 权限请求已失效（可能因服务重启），请重新发送你的请求。');
+      await sender.sendText(fromUserId, contextToken, '⚠️ Permission request is no longer valid (the service may have restarted) — please resend your message.');
       return;
     }
 
     const lower = userText.toLowerCase();
     if (lower === 'y' || lower === 'yes') {
       const resolved = permissionBroker.resolvePermission(account.accountId, true);
-      await sender.sendText(fromUserId, contextToken, resolved ? '✅ 已允许' : '⚠️ 权限请求处理失败，可能已超时');
+      await sender.sendText(fromUserId, contextToken, resolved ? '✅ Allowed' : '⚠️ Failed to apply permission decision — it may have timed out');
     } else if (lower === 'n' || lower === 'no') {
       const resolved = permissionBroker.resolvePermission(account.accountId, false);
-      await sender.sendText(fromUserId, contextToken, resolved ? '❌ 已拒绝' : '⚠️ 权限请求处理失败，可能已超时');
+      await sender.sendText(fromUserId, contextToken, resolved ? '❌ Denied' : '⚠️ Failed to apply permission decision — it may have timed out');
     } else {
-      await sender.sendText(fromUserId, contextToken, '正在等待权限审批，请回复 y 或 n。');
+      await sender.sendText(fromUserId, contextToken, 'Awaiting permission decision — please reply with y or n.');
     }
     return;
   }
@@ -361,7 +364,7 @@ async function handleMessage(
   // -- Normal message -> Claude --
 
   if (!userText && !imageItem) {
-    await sender.sendText(fromUserId, contextToken, '暂不支持此类型消息，请发送文字或图片');
+    await sender.sendText(fromUserId, contextToken, 'Unsupported message type — please send text or an image.');
     return;
   }
 
@@ -406,7 +409,7 @@ async function sendToClaude(
   activeControllers.set(account.accountId, abortController);
 
   // Record user message in chat history
-  sessionStore.addChatMessage(session, 'user', userText || '(图片)');
+  sessionStore.addChatMessage(session, 'user', userText || '(image)');
 
   try {
     // Download image if present
@@ -459,7 +462,7 @@ async function sendToClaude(
     }
 
     const queryOptions: QueryOptions = {
-      prompt: userText || '请分析这张图片',
+      prompt: userText || 'Please analyze this image',
       cwd: (session.workingDirectory || config.workingDirectory).replace(/^~/, process.env.HOME || ''),
       resume: session.sdkSessionId,
       model: session.model,
@@ -536,9 +539,9 @@ async function sendToClaude(
       }
     } else if (result.error) {
       logger.error('Claude query error', { error: result.error });
-      await sender.sendText(fromUserId, contextToken, '⚠️ Claude 处理请求时出错，请稍后重试。');
+      await sender.sendText(fromUserId, contextToken, '⚠️ Claude failed to process your request — please try again.');
     } else if (!anySent) {
-      await sender.sendText(fromUserId, contextToken, 'ℹ️ Claude 无返回内容（可能因权限被拒而终止）');
+      await sender.sendText(fromUserId, contextToken, 'ℹ️ Claude returned no content (it may have stopped because permission was denied).');
     }
 
     // Update session with new SDK session ID
@@ -553,7 +556,7 @@ async function sendToClaude(
     } else {
       const errorMsg = err instanceof Error ? err.message : String(err);
       logger.error('Error in sendToClaude', { error: errorMsg });
-      await sender.sendText(fromUserId, contextToken, '⚠️ 处理消息时出错，请稍后重试。');
+      await sender.sendText(fromUserId, contextToken, '⚠️ Error while processing your message — please try again.');
     }
     session.state = 'idle';
     sessionStore.save(account.accountId, session);
@@ -574,14 +577,14 @@ const command = process.argv[2];
 if (command === 'setup') {
   runSetup().catch((err) => {
     logger.error('Setup failed', { error: err instanceof Error ? err.message : String(err) });
-    console.error('设置失败:', err);
+    console.error('Setup failed:', err);
     process.exit(1);
   });
 } else {
   // 'start' or no argument
   runDaemon().catch((err) => {
     logger.error('Daemon start failed', { error: err instanceof Error ? err.message : String(err) });
-    console.error('启动失败:', err);
+    console.error('Daemon start failed:', err);
     process.exit(1);
   });
 }
