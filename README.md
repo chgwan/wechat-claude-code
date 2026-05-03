@@ -83,13 +83,16 @@ npm run daemon -- logs     # View recent logs
 | `/reset` | Full reset including working directory |
 | `/model <name>` | Switch Claude model |
 | `/permission <mode>` | Switch permission mode |
+| `/backend <name>` | Switch backend (`claude` or `glm`) |
 | `/prompt [text]` | View or set a system prompt appended to every query |
 | `/status` | View current session state |
 | `/cwd [path]` | View or switch working directory |
+| `/resume [id]` | List or resume Claude Code sessions for the current cwd |
 | `/skills` | List installed Claude Code skills |
 | `/history [n]` | View last N chat messages |
 | `/compact` | Start a new SDK session (clear token context) |
 | `/undo [n]` | Remove last N messages from history |
+| `/version` | Show version info |
 | `/<skill> [args]` | Trigger any installed skill |
 
 ## Permission Approval
@@ -128,7 +131,7 @@ All data is stored in `~/.wechat-claude-code/`:
 ```
 ~/.wechat-claude-code/
 ├── accounts/       # WeChat account credentials (one JSON per account)
-├── config.env      # Global config (working directory, model, permission mode, system prompt)
+├── config.env      # Global config (working directory, model, permission mode, backend, system prompt)
 ├── sessions/       # Session data (one JSON per account)
 ├── get_updates_buf # Message polling sync buffer
 └── logs/           # Rotating logs (daily, 30-day retention)

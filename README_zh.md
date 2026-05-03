@@ -83,13 +83,16 @@ npm run daemon -- logs     # 查看最近日志
 | `/reset` | 完全重置（包括工作目录等设置） |
 | `/model <名称>` | 切换 Claude 模型 |
 | `/permission <模式>` | 切换权限模式 |
+| `/backend <名称>` | 切换后端（`claude` 或 `glm`） |
 | `/prompt [内容]` | 查看或设置系统提示词（全局生效） |
 | `/status` | 查看当前会话状态 |
 | `/cwd [路径]` | 查看或切换工作目录 |
+| `/resume [id]` | 列出或恢复当前工作目录下的 Claude Code 会话 |
 | `/skills` | 列出已安装的 Claude Code Skill |
 | `/history [数量]` | 查看最近 N 条对话记录 |
 | `/compact` | 压缩上下文（开始新 SDK 会话，保留历史） |
 | `/undo [数量]` | 撤销最近 N 条对话 |
+| `/version` | 查看版本信息 |
 | `/<skill> [参数]` | 触发任意已安装的 Skill |
 
 ## 权限审批
@@ -128,7 +131,7 @@ npm run daemon -- logs     # 查看最近日志
 ```
 ~/.wechat-claude-code/
 ├── accounts/       # 微信账号凭证（每个账号一个 JSON）
-├── config.env      # 全局配置（工作目录、模型、权限模式、系统提示词）
+├── config.env      # 全局配置（工作目录、模型、权限模式、后端、系统提示词）
 ├── sessions/       # 会话数据（每个账号一个 JSON）
 ├── get_updates_buf # 消息轮询同步缓冲
 └── logs/           # 运行日志（每日轮转，保留 30 天）
