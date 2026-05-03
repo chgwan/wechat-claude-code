@@ -60,13 +60,13 @@ export function createPermissionBroker(onTimeout?: OnPermissionTimeout) {
 
   function formatPendingMessage(perm: PendingPermission): string {
     return [
-      '\u{1F527} \u6743\u9650\u8BF7\u6C42',
+      '\uD83D\uDD27 Permission request',
       '',
-      `\u5DE5\u5177: ${perm.toolName}`,
-      `\u8F93\u5165: ${perm.toolInput.slice(0, 500)}`,
+      `Tool: ${perm.toolName}`,
+      `Input: ${perm.toolInput.slice(0, 500)}`,
       '',
-      '\u56DE\u590D y \u5141\u8BB8\uFF0Cn \u62D2\u7EDD',
-      '(120\u79D2\u672A\u56DE\u590D\u81EA\u52A8\u62D2\u7EDD)',
+      'Reply y to allow, n to deny',
+      '(Auto-denied after 120s without response)',
     ].join('\n');
   }
 
